@@ -726,8 +726,13 @@ function nowIso() {
 
 // Simple in-memory sliding-window rate limiter.
 const buckets = new Map();
+let lastSweep = Date.now();
 function rateLimit(key, max, windowMs) {
   const now = Date.now();
+  if (now - lastSweep > 600e3) {
+    lastSweep = now;
+    for (const [k, a] of buckets) if (!a.some((t) => now - t < 3600e3)) buckets.delete(k);
+  }
   const arr = (buckets.get(key) || []).filter((t) => now - t < windowMs);
   if (arr.length >= max) {
     buckets.set(key, arr);
@@ -737,10 +742,6 @@ function rateLimit(key, max, windowMs) {
   buckets.set(key, arr);
   return true;
 }
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, arr] of buckets) if (!arr.some((t) => now - t < 3600e3)) buckets.delete(k);
-}, 600e3).unref();
 
 function clientIp(req) {
   const cf = req.headers['cf-connecting-ip'];
@@ -2799,5 +2800,6 @@ function __load(rel) {
   __defs[rel](module, module.exports, req);
   return module.exports;
 }
-const __entry = __load('src/worker-entry.js');
-export default { fetch: (request, env, ctx) => __entry.fetchHandler(request, env, ctx) };
+// Load modules lazily: Workers forbid timers / random values in the global scope.
+let __entry = null;
+export default { fetch: (request, env, ctx) => { if (!__entry) __entry = __load('src/worker-entry.js'); return __entry.fetchHandler(request, env, ctx); } };
