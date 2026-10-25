@@ -289,7 +289,7 @@ async function sha256hex(s) {
 }
 
 // Passwords: PBKDF2-SHA256 (fast enough for the Workers free CPU budget, salted, constant-time compare).
-const ITER = 30000;
+const ITER = 10000; // keeps login under the Workers free-plan CPU limit (10 ms); salted + rate-limited
 async function pbkdf2(pw, salt, iter) {
   const key = await C.subtle.importKey('raw', enc.encode(String(pw)), 'PBKDF2', false, ['deriveBits']);
   return new Uint8Array(await C.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iter }, key, 256));
