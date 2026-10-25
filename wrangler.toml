@@ -1,0 +1,18 @@
+# Cloudflare Worker config for the COD platform (free plan).
+name = "cod-platform"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+# Database (Cloudflare D1, free: 5 GB, 5M reads/day, 100k writes/day)
+[[d1_databases]]
+binding = "DB"
+database_name = "cod-platform"
+database_id = "3225c180-4d3a-48d7-b0bf-a186acfd66ae"
+
+# Free AI images (Workers AI, ~10,000 neurons/day)
+[ai]
+binding = "AI"
+
+[observability]
+enabled = true
