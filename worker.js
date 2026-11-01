@@ -56,7 +56,7 @@ async function hfProxy(request, url, ctx) {
   const user = await auth.currentUser({ headers, socket: {} }).catch(() => null);
   if (!user || !(user.is_super || auth.can(user, 'products') || auth.can(user, 'landings'))) return new Response('not found', { status: 404 });
   const cache = caches.default, key = new Request(url.origin + '/hf/' + f.repo + '/resolve/main/' + f.file);
-  let r = await cache.match(key);
+  let r = await cache.match(key), hit = !!r;
   if (!r) {
     const up = await fetch('https://huggingface.co/' + f.repo + '/resolve/main/' + f.file, { redirect: 'follow' });
     if (!up.ok || !up.body) return new Response('upstream ' + up.status, { status: 502 });
@@ -68,6 +68,7 @@ async function hfProxy(request, url, ctx) {
   const out = new Headers(r.headers);
   out.set('Cache-Control', 'private, max-age=' + HF_TTL + ', immutable');
   out.set('X-Content-Type-Options', 'nosniff');
+  out.set('X-Mirror', hit ? 'HIT' : 'MISS');
   out.delete('Access-Control-Allow-Origin');
   return new Response(request.method === 'HEAD' ? null : r.body, { status: 200, headers: out });
 }
