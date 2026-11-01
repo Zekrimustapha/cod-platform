@@ -8,6 +8,7 @@ const { init, drainBg, D } = require('./db');
 const { makeD1Driver } = require('./driver-d1');
 const LAI = require('./landing-ai');
 const app = require('./app');
+const auth = require('./auth');
 
 const SCHEMA_VERSION = '5';
 let ready = null;
@@ -37,27 +38,47 @@ function makeRes() {
   };
 }
 
-// Same-origin mirror of the free background-removal model files (some browsers/networks block huggingface.co).
-const HF_OK = /^\/hf\/(onnx-community\/BiRefNet_lite-ONNX|d30social\/ormbg-ortweb)\/resolve\/main\/([\w./-]+\.(json|onnx|onnx_data))$/;
+// Same-origin mirror of the free background-removal model files (for networks that block huggingface.co).
+// Locked down: logged-in admins only, exact file allowlist, stored once in the Cloudflare edge cache.
+const HF_FILES = {
+  'd30social/ormbg-ortweb': ['config.json', 'preprocessor_config.json', 'onnx/model.onnx', 'onnx/model_fp16.onnx'],
+  'onnx-community/BiRefNet_lite-ONNX': ['config.json', 'preprocessor_config.json', 'onnx/model_fp16.onnx']
+};
+const HF_TTL = 2592000; // 30 days
+function hfMatch(pathname) {
+  const m = pathname.match(/^\/hf\/([\w-]+\/[\w.-]+)\/resolve\/main\/(.+)$/);
+  return m && HF_FILES[m[1]] && HF_FILES[m[1]].includes(m[2]) ? { repo: m[1], file: m[2] } : null;
+}
 async function hfProxy(request, url, ctx) {
-  const m = url.pathname.match(HF_OK);
-  if (!m || m[2].includes('..')) return new Response('not found', { status: 404 });
-  const cache = caches.default, key = new Request(url.origin + url.pathname);
+  const f = hfMatch(url.pathname);
+  if (!f) return new Response('not found', { status: 404 });
+  const headers = {}; request.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+  const user = await auth.currentUser({ headers, socket: {} }).catch(() => null);
+  if (!user || !(user.is_super || auth.can(user, 'products') || auth.can(user, 'landings'))) return new Response('not found', { status: 404 });
+  const cache = caches.default, key = new Request(url.origin + '/hf/' + f.repo + '/resolve/main/' + f.file);
   let r = await cache.match(key);
   if (!r) {
-    const up = await fetch('https://huggingface.co/' + m[1] + '/resolve/main/' + m[2], { cf: { cacheEverything: true, cacheTtl: 2592000 } });
-    if (!up.ok) return new Response('upstream ' + up.status, { status: 502 });
-    const h = new Headers({ 'Content-Type': m[3] === 'json' ? 'application/json' : 'application/octet-stream', 'Cache-Control': 'public, max-age=2592000, immutable', 'Access-Control-Allow-Origin': '*' });
+    const up = await fetch('https://huggingface.co/' + f.repo + '/resolve/main/' + f.file, { redirect: 'follow' });
+    if (!up.ok || !up.body) return new Response('upstream ' + up.status, { status: 502 });
+    const h = new Headers({ 'Content-Type': /\.json$/.test(f.file) ? 'application/json' : 'application/octet-stream', 'Cache-Control': 'public, max-age=' + HF_TTL + ', immutable' });
     const len = up.headers.get('content-length'); if (len) h.set('Content-Length', len);
     r = new Response(up.body, { status: 200, headers: h });
-    if (m[3] === 'json') ctx.waitUntil(cache.put(key, r.clone()));
+    ctx.waitUntil(cache.put(key, r.clone()).catch(() => {}));
   }
-  return r;
+  const out = new Headers(r.headers);
+  out.set('Cache-Control', 'private, max-age=' + HF_TTL + ', immutable');
+  out.set('X-Content-Type-Options', 'nosniff');
+  out.delete('Access-Control-Allow-Origin');
+  return new Response(request.method === 'HEAD' ? null : r.body, { status: 200, headers: out });
 }
 
 async function fetchHandler(request, env, ctx) {
   const u0 = new URL(request.url);
-  if (u0.pathname.startsWith('/hf/') && request.method === 'GET') return hfProxy(request, u0, ctx);
+  if (u0.pathname.startsWith('/hf/')) {
+    if (!['GET', 'HEAD'].includes(request.method)) return new Response('not found', { status: 404 });
+    await ensureReady(env);
+    return hfProxy(request, u0, ctx);
+  }
   await ensureReady(env);
   LAI.setAiBinding(env.AI);
   const url = new URL(request.url);
